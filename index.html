@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fixation</title>
+
+<style>
+html,
+body {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    background: white;
+}
+
+body {
+    position: relative;
+}
+
+/*
+最初のEnterキー入力を促す画面
+*/
+#startOverlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    background: white;
+    color: #111;
+
+    font-family: Arial, sans-serif;
+    font-size: 24px;
+    font-weight: bold;
+
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+/*
+注視点の中心を、
+画面上端から25%の位置に配置します。
+*/
+#fixation {
+    position: absolute;
+
+    left: 50%;
+    top: 25%;
+    transform: translate(-50%, -50%);
+
+    width: 220px;
+    height: 220px;
+
+    display: none;
+    align-items: center;
+    justify-content: center;
+
+    background: gray;
+    color: white;
+    border-radius: 18px;
+
+    font-family: Arial, sans-serif;
+    font-size: 150px;
+    line-height: 1;
+
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+/*
+終了表示
+*/
+#endMessage {
+    position: absolute;
+
+    left: 50%;
+    top: 25%;
+    transform: translate(-50%, -50%);
+
+    display: none;
+
+    color: #111;
+
+    font-family: Arial, sans-serif;
+    font-size: 64px;
+    font-weight: bold;
+
+    white-space: nowrap;
+
+    user-select: none;
+    -webkit-user-select: none;
+}
+</style>
+</head>
+
+<body>
+
+<div id="startOverlay">
+    Enterキーを押して開始してください
+</div>
+
+<div id="fixation">✖</div>
+
+<div id="endMessage">終了</div>
+
+<script>
+'use strict';
+
+/* ==================================================
+   設定
+================================================== */
+
+/*
+Enterキーを押してから終了するまでの時間
+60,000 ms ＝ 60秒
+*/
+const FIXATION_DURATION = 60000;
+
+/*
+最初のEnterキー押下時に鳴らす音
+*/
+const START_TONE = {
+    frequency: 659.25,
+    duration: 500,
+    volume: 0.20
+};
+
+/*
+60秒後の終了時に鳴らす音
+*/
+const END_TONE = {
+    frequency: 880,
+    duration: 600,
+    volume: 0.22
+};
+
+/* ==================================================
+   DOM
+================================================== */
+
+const startOverlay =
+    document.getElementById("startOverlay");
+
+const fixation =
+    document.getElementById("fixation");
+
+const endMessage =
+    document.getElementById("endMessage");
+
+/* ==================================================
+   状態
+================================================== */
+
+let started = false;
+let endTimer = null;
+
+let audioContext = null;
+
+let wakeLock = null;
+let wakeLockEnabled = false;
+
+/* ==================================================
+   音声
+================================================== */
+
+function getAudioContext() {
+    if (!audioContext) {
+        const AudioContextClass =
+            window.AudioContext ||
+            window.webkitAudioContext;
+
+        if (AudioContextClass) {
+            audioContext =
+                new AudioContextClass();
+        }
+    }
+
+    return audioContext;
+}
+
+/*
+Enterキー操作によって、
+ブラウザの音声制限を解除します。
+*/
+async function unlockAudio() {
+    const context =
+        getAudioContext();
+
+    if (!context) {
+        throw new Error(
+            "このブラウザでは音声機能を利用できません。"
+        );
+    }
+
+    if (context.state !== "running") {
+        await context.resume();
+    }
+
+    /*
+    ほぼ無音の短い音を再生します。
+    */
+    const oscillator =
+        context.createOscillator();
+
+    const gain =
+        context.createGain();
+
+    gain.gain.setValueAtTime(
+        0.0001,
+        context.currentTime
+    );
+
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+
+    oscillator.start(
+        context.currentTime
+    );
+
+    oscillator.stop(
+        context.currentTime + 0.02
+    );
+}
+
+/*
+指定された周波数・時間・音量で音を鳴らします。
+*/
+async function playTone(
+    frequency,
+    durationMs,
+    volume
+) {
+    try {
+        const context =
+            getAudioContext();
+
+        if (!context) {
+            return false;
+        }
+
+        if (context.state !== "running") {
+            await context.resume();
+        }
+
+        const oscillator =
+            context.createOscillator();
+
+        const gain =
+            context.createGain();
+
+        const now =
+            context.currentTime;
+
+        const duration =
+            durationMs / 1000;
+
+        const attack =
+            Math.min(
+                0.08,
+                duration * 0.25
+            );
+
+        const release =
+            Math.min(
+                0.22,
+                duration * 0.45
+            );
+
+        oscillator.type = "sine";
+
+        oscillator.frequency.setValueAtTime(
+            frequency,
+            now
+        );
+
+        gain.gain.setValueAtTime(
+            0.0001,
+            now
+        );
+
+        gain.gain.exponentialRampToValueAtTime(
+            volume,
+            now + attack
+        );
+
+        gain.gain.setValueAtTime(
+            volume,
+            now + Math.max(
+                attack,
+                duration - release
+            )
+        );
+
+        gain.gain.exponentialRampToValueAtTime(
+            0.0001,
+            now + duration
+        );
+
+        oscillator.connect(gain);
+        gain.connect(context.destination);
+
+        oscillator.start(now);
+        oscillator.stop(now + duration);
+
+        return true;
+
+    } catch (error) {
+        console.error(
+            "音声を再生できませんでした。",
+            error
+        );
+
+        return false;
+    }
+}
+
+function playStartTone() {
+    void playTone(
+        START_TONE.frequency,
+        START_TONE.duration,
+        START_TONE.volume
+    );
+}
+
+function playEndTone() {
+    void playTone(
+        END_TONE.frequency,
+        END_TONE.duration,
+        END_TONE.volume
+    );
+}
+
+/* ==================================================
+   Screen Wake Lock
+================================================== */
+
+async function requestScreenWakeLock() {
+    wakeLockEnabled = true;
+
+    if (!("wakeLock" in navigator)) {
+        console.warn(
+            "このブラウザーはScreen Wake Lock APIに対応していません。"
+        );
+
+        return false;
+    }
+
+    if (wakeLock !== null) {
+        return true;
+    }
+
+    try {
+        wakeLock =
+            await navigator.wakeLock.request(
+                "screen"
+            );
+
+        wakeLock.addEventListener(
+            "release",
+            () => {
+                console.warn(
+                    "画面起動ロックが解除されました。"
+                );
+
+                wakeLock = null;
+            }
+        );
+
+        console.log(
+            "画面起動ロックを取得しました。"
+        );
+
+        return true;
+
+    } catch (error) {
+        console.warn(
+            "画面起動ロックを取得できませんでした。",
+            error
+        );
+
+        wakeLock = null;
+
+        return false;
+    }
+}
+
+async function releaseScreenWakeLock() {
+    wakeLockEnabled = false;
+
+    if (wakeLock !== null) {
+        try {
+            await wakeLock.release();
+
+        } catch (error) {
+            console.warn(
+                "画面起動ロックの解除に失敗しました。",
+                error
+            );
+        }
+
+        wakeLock = null;
+    }
+}
+
+/*
+タブ切り替えなどでWake Lockが解除された場合、
+画面へ戻ったときに再取得します。
+*/
+document.addEventListener(
+    "visibilitychange",
+    () => {
+        if (
+            document.visibilityState === "visible" &&
+            wakeLockEnabled &&
+            wakeLock === null
+        ) {
+            void requestScreenWakeLock();
+        }
+    }
+);
+
+/*
+ページを閉じるときにWake Lockを解除します。
+*/
+window.addEventListener(
+    "pagehide",
+    () => {
+        clearTimeout(endTimer);
+        void releaseScreenWakeLock();
+    }
+);
+
+/* ==================================================
+   注視点開始
+================================================== */
+
+async function startFixation() {
+    if (started) {
+        return;
+    }
+
+    /*
+    長押しや連続入力による二重開始を防ぎます。
+    */
+    started = true;
+
+    try {
+        await unlockAudio();
+
+    } catch (error) {
+        console.error(error);
+
+        started = false;
+
+        startOverlay.textContent =
+            "音声を有効にできませんでした。ページを再読み込みしてください。";
+
+        return;
+    }
+
+    /*
+    Enterキー押下時に音を鳴らします。
+    */
+    playStartTone();
+
+    startOverlay.style.display =
+        "none";
+
+    endMessage.style.display =
+        "none";
+
+    fixation.style.display =
+        "flex";
+
+    /*
+    画面消灯防止を開始します。
+    取得に失敗しても注視点表示は続行します。
+    */
+    void requestScreenWakeLock();
+
+    /*
+    Enterキー押下から60秒後に終了します。
+    */
+    endTimer =
+        setTimeout(
+            endFixation,
+            FIXATION_DURATION
+        );
+}
+
+/* ==================================================
+   終了
+================================================== */
+
+function endFixation() {
+    clearTimeout(endTimer);
+    endTimer = null;
+
+    /*
+    60秒後に終了音を鳴らします。
+    */
+    playEndTone();
+
+    fixation.style.display =
+        "none";
+
+    endMessage.style.display =
+        "block";
+
+    /*
+    終了後は画面消灯防止を解除します。
+    */
+    void releaseScreenWakeLock();
+}
+
+/* ==================================================
+   Enterキー入力
+================================================== */
+
+document.addEventListener(
+    "keydown",
+    event => {
+        if (
+            event.key !== "Enter" ||
+            event.repeat ||
+            started
+        ) {
+            return;
+        }
+
+        event.preventDefault();
+
+        void startFixation();
+    }
+);
+</script>
+
+</body>
+</html>
